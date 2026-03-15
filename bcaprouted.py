@@ -9,15 +9,33 @@ import os
 import sys
 import serial
 from time import sleep, time
-import subprocess, signal
+import subprocess
 import requests
 import re
 from dotenv import load_dotenv
 import ipaddress
+import signal
+from threading import Event
 
-# Статус завершения, взаимодействующий с systemd
+# Взаимодействие с systemd, статус завершения, сигналы
+EXIT_RUNTIME_SUCCESS = 0
 EXIT_RUNTIME_ERROR = 1
 EXIT_CONFIG_ERROR = 10
+
+# Событие для остановки основного цикла 
+# не нужно указывать дополнительное ожидание для юнита TimeoutStopSec=300
+stop_event = Event()
+
+def handle_stop_signal(signum, frame):
+  """
+  Обработчик сигналов для корректного завершения скрипта
+  """
+  print(f"Get signal {signum} normal exit...")
+  stop_event.set()
+
+# Регистрируем обработчик сигналов
+signal.signal(signal.SIGTERM, handle_stop_signal)
+signal.signal(signal.SIGINT, handle_stop_signal)
 
 # загрузка конфига
 load_dotenv('config.env')
@@ -102,7 +120,8 @@ def modem_control(actions: str):
           dbm = 2 * rssi - 113 if rssi != 99 else "N/A"
           print(f"Мodem response: RSSI {rssi}, Signal {dbm} dBm")
       else:
-        print(f"Мodem response: {response.strip()}")
+        print(f"Мodem response: {response.strip()} wait 10s ...")
+        stop_event.wait(10)  # Если переключали интернет ждем 10 сек, чтобы успело все сработать
   except Exception as e:
     print(f"Modem error: {e}")
   return
@@ -140,7 +159,7 @@ def resend_ntfy_message(message: str):
   for _ in range(12):  # Пытаемся отправить сообщение 12 раз с интервалом в 5 секунд (1 минута)
     if send_ntfy_message(message):
       return True
-    sleep(5)
+    stop_event.wait(5)
   print("Failed to send alert after multiple attempts.")
   return False
 
@@ -170,43 +189,45 @@ def vpn_control(action: str):
 vpn_control("stop")
 modem_control("disconnect")
 modem_on = False
-cycle_dead = 0
-cycle_live = 0
+cycle_dead = cycle_live = 0
 
-while True:
+while not stop_event.is_set():
   start_time = time()
   modem_control("signal")
+  inet_down = True
   for iphost in iphosts:
     if (ping(iphost)==0):
+      inet_down = False
       msg = f'Host {iphost} is OK'
       cycle_dead = 0
-      cycle_live += 1              #Если хотя бы один хост откликнулся, считаем сеть жива
+      cycle_live += 1                  #Если хотя бы один хост откликнулся, считаем сеть жива
+      if (cycle_live > cycles_live):
+        cycle_dead = 0
+        cycle_live = 1
+        if (modem_on):                 #Если модем включен, отключаем
+          modem_on = False
+          vpn_control("stop")          #Отключаем VPN
+          modem_control("disconnect")
+          resend_ntfy_message('Modem DOWN!!!')  #Шлем уведомление
+          msg = 'Internet UP!!!'
       break
-    else:
-      msg = f'All hosts dead!'     #Если хосты не пингуются плюсуем dead, обнуляем live
-      cycle_dead += 1
+
+  if (inet_down):
+    msg = 'All hosts are not ping! '         #Если хосты не пингуются плюсуем dead, обнуляем live
+    cycle_dead += 1
+    cycle_live = 0
+    if (cycle_dead > cycles_dead):   #Если прошло > cycles_dead циклов - обнуляем счетчики
+      cycle_dead = 1
       cycle_live = 0
-
-  if (cycle_dead > cycles_dead):   #Если прошло cycles_dead циклов - обнуляем счетчики
-    msg = 'Route dead!'
-    cycle_dead = 0
-    cycle_live = 0
-    if (not modem_on):             #Если модем выключен, включаем
-      modem_on = True
-      modem_control("connect")
-      vpn_control("start")         #Поднимаем VPN
-      resend_ntfy_message('Modem UP!!!')  #Шлем уведомление
-
-  if (cycle_live > cycles_live):   #Если пинги есть cycles_live циклов, обнуляем счетчики
-    msg = 'Route live!'
-    cycle_live = 0
-    cycle_dead = 0
-    if (modem_on):                 #Если модем включен, отключаем
-      modem_on = False
-      vpn_control("stop")          #Отключаем VPN
-      modem_control("disconnect")
-      resend_ntfy_message('Modem DOWN!!!')  #Шлем уведомление
+      if (not modem_on):             #Если модем выключен, включаем
+        modem_on = True
+        modem_control("connect")
+        vpn_control("start")         #Поднимаем VPN
+        resend_ntfy_message('Modem UP!!!')  #Шлем уведомление
+        msg = 'Internet DOWN!!!'
 
   #пишем в консоль что произошло и пауза
-  print(msg  + ' | cycle_dead = ' + str(cycle_dead) + ' | cycle_live = ' + str(cycle_live))
-  sleep(max(0, 60 - (time() - start_time))) # Чтобы цикл примерно соответствовал 1 минуте
+  print(f'{msg:<32} | Cycles not ping = {cycle_dead:<4} | Cycles OK = {cycle_live:<4} |')
+  stop_event.wait(max(0, 60 - (time() - start_time))) # Чтобы цикл примерно соответствовал 1 минуте
+
+sys.exit(EXIT_RUNTIME_SUCCESS)
