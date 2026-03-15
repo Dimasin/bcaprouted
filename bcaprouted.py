@@ -134,7 +134,7 @@ def modem_control(actions: str):
       ser.write(commands[actions])
       sleep(1)
       # Читаем ответ
-      response = ser.read_all().decode('utf-8', errors='ignore')
+      response = repr(ser.read_all().decode('utf-8', errors='ignore'))
       match = re.search(r'OK', response)
       if not match:
         print(f"Unexpected modem response: {response.strip()}")
@@ -146,7 +146,9 @@ def modem_control(actions: str):
           rssi = int(match.group(1))
           # Переводим в dBm (упрощенная формула: dBm = 2 * rssi - 113)
           dbm = 2 * rssi - 113 if rssi != 99 else "N/A"
-          print(f"RSSI: {rssi} | Signal: {dbm} dBm")
+          print(f"Мodem response: RSSI {rssi}, Signal {dbm} dBm")
+      else:
+        print(f"Мodem response: {response.strip()}")
   except Exception as e:
     print(f"Modem error: {e}")
   return
@@ -208,7 +210,6 @@ def resend_ntfy_message(message: str):
   """
   Пытается отправить уведомление в ntfy несколько раз с паузой, если не удается, выводит ошибку
   """
-  print(message)
   for _ in range(12):  # Пытаемся отправить сообщение 12 раз с интервалом в 5 секунд (1 минута)
     if send_ntfy_message(message):
       return True
@@ -228,63 +229,54 @@ def vpn_control(action: str):
   if not vpn_unit or not vpn_unit.strip():
     print("Service name is empty")
     return
-
-  cmd = ["systemctl", action, vpn_unit]
+  # Выполняем команду от sudo (смотри комментарий в начале)
+  cmd = ["sudo", "systemctl", action, vpn_unit]
   result = subprocess.run(cmd, capture_output=True, text=True)
-
+  # Выводим все что systemctl вернул
   print(f"vpn_control({action}) return {result}")
   return
 
+###############################################################################################
 #Приводим модем и openvpn в состояние OFF
-vpn_control("start")
-vpn_control("is-active")
 vpn_control("stop")
-vpn_control("is-active")
 try:
-  modem_control("signal")
   modem_control("disconnect")
-  modem_control("connect")
 except:
   print("Failed to initialize modem state. Exiting.")
   sys.exit(EXIT_RUNTIME_ERROR)
 
 while True:
   start_time = time()
-  get_signal_level()
-  live_or_dead = False
+  modem_control("signal")
   for iphost in iphosts:
     if (ping(iphost)==0):
       msg = f'Host {iphost} is OK'
-      live_or_dead = True               #Если хотя бы один хост откликнулся, считаем сеть жива
+      cycle_dead = 0
+      cycle_live += 1              #Если хотя бы один хост откликнулся, считаем сеть жива
       break
     else:
-      msg = f'All hosts dead!'
+      msg = f'All hosts dead!'     #Если хосты не пингуются плюсуем dead, обнуляем live
+      cycle_dead += 1
+      cycle_live = 0
 
-  if (live_or_dead):
-    cycle_dead = 0
-    cycle_live += 1
-  else:                                 #Если хосты не пингуются плюсуем dead, обнуляем live
-    cycle_dead += 1
-    cycle_live = 0
-
-  if (cycle_dead > cycles_dead):     #Если прошло cycles_dead циклов - обнуляем счетчики
+  if (cycle_dead > cycles_dead):   #Если прошло cycles_dead циклов - обнуляем счетчики
     msg = 'Route dead!'
     cycle_dead = 0
     cycle_live = 0
-    if (not modem_on):     #Если модем выключен, включаем
+    if (not modem_on):             #Если модем выключен, включаем
       modem_on = True
-      modem_operate(modem_on)
-      vpn_control("start")       #Поднимаем VPN
+      modem_control("connect")
+      vpn_control("start")         #Поднимаем VPN
       resend_ntfy_message('Modem UP!!!')  #Шлем уведомление
 
-  if (cycle_live > cycles_live):       #Если пинги есть cycles_live циклов, обнуляем счетчики
+  if (cycle_live > cycles_live):   #Если пинги есть cycles_live циклов, обнуляем счетчики
     msg = 'Route live!'
     cycle_live = 0
     cycle_dead = 0
-    if (modem_on):           #Если модем включен, отключаем
+    if (modem_on):                 #Если модем включен, отключаем
       modem_on = False
-      vpn_control("stop")        #Отключаем VPN
-      modem_operate(modem_on)
+      vpn_control("stop")          #Отключаем VPN
+      modem_control("disconnect")
       resend_ntfy_message('Modem DOWN!!!')  #Шлем уведомление
 
   #пишем в консоль что произошло и пауза
