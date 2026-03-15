@@ -10,7 +10,6 @@ import sys
 import serial
 from time import sleep, time
 import subprocess, signal
-import telebot
 import requests
 import re
 from dotenv import load_dotenv
@@ -28,8 +27,6 @@ ipaddrs = os.getenv("ipaddrs")
 modemport = os.getenv("modemport")
 cycles_dead = int(os.getenv("cycles_dead","5"))
 cycles_live = int(os.getenv("cycles_live","5"))
-telegram_token = os.getenv("telegram_token","")
-telrgram_chat_id = os.getenv("telrgram_chat_id","")
 ntfy_url = os.getenv("ntfy_url","")
 ntfy_lp = os.getenv("ntfy_login_pass","")
 vpn_unit = os.getenv("vpn_unit","")
@@ -67,49 +64,6 @@ def ping(host: str):
   if(pr.returncode != 0):
     print(pr.stdout.replace('\n\n','\n')[:-1])
   return pr.returncode
-
-
-def modem_operate(op: bool):
-  """
-  Подключает/отключает модем
-  """
-  sleep(5)
-  try:
-    with serial.Serial(modemport, 115200, timeout=5, write_timeout=5) as ser:
-      if (op):
-        ser.write(b'AT^NDISDUP=1,1,"internet"\r')
-      else:
-        ser.write(b'AT^NDISDUP=1,0,"internet"\r')
-      sleep(1)
-  except Exception as e:
-    print(f"Modem error: {e}")
-    raise
-  return
-
-
-def get_signal_level():
-  """
-  Получает уровень сигнала модема
-  """
-  try:
-    with serial.Serial(modemport, 115200, timeout=5, write_timeout=5) as ser:
-      # Очищаем буфер перед запросом
-      ser.reset_input_buffer()
-      # Отправляем команду
-      ser.write(b'AT+CSQ\r\n')
-      sleep(1)
-      # Читаем ответ
-      response = ser.read_all().decode('utf-8', errors='ignore')
-      # Ищем число в строке вида "+CSQ: 18,99"
-    match = re.search(r'\+CSQ:\s*(\d+),', response)
-    if match:
-      rssi = int(match.group(1))
-      # Переводим в dBm (упрощенная формула: dBm = 2 * rssi - 113)
-      dbm = 2 * rssi - 113 if rssi != 99 else "N/A"
-      print(f"RSSI: {rssi} | Signal: {dbm} dBm")
-  except Exception as e:
-    print(f"Modem error: {e}")
-  return
 
 
 def modem_control(actions: str):
@@ -152,37 +106,6 @@ def modem_control(actions: str):
   except Exception as e:
     print(f"Modem error: {e}")
   return
-
-
-def vpn_operate(updown: bool):
-  """
-  Переподключает openvpn клиент для пользователя с root правами
-  """
-  p = subprocess.Popen(['pgrep', '-a', 'openvpn'], stdout=subprocess.PIPE)
-  out, err = p.communicate()
-  for line in out.splitlines():
-    line = bytes.decode(line)
-    if ('master.ovpn' not in line):
-      continue
-    pid = int(line.split(None, 1)[0])
-    os.kill(pid, signal.SIGKILL)
-  sleep(5)
-  if (updown):
-    os.system('/usr/sbin/openvpn --config /etc/openvpn/client/master.ovpn --daemon')
-    sleep(5)
-
-
-def sendtlg(msg: str): 
-  """
-  Отправляет уведомление в телеграмм
-  """
-  tb = telebot.TeleBot(telegram_token)
-  try:
-    tb.send_message(telrgram_chat_id, msg)
-  except:
-    print('Error send tlgrm message: ' + msg)
-    return False
-  return True
 
 
 def send_ntfy_message(message: str):
