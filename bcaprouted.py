@@ -3,7 +3,7 @@
 # sudo chmod 666 /dev/ttyUSB2 или sudo usermod -a -G dialout $USER после чего нужно перелогиниться в систему
 # Разрешаем сервису управлять только одним конкретным VPN-соединением
 # Выполните sudo visudo и добавьте в самый конец файла (замените myuser на ваше имя пользователя)
-# myuser ALL=(ALL) NOPASSWD: /usr/bin/systemctl start openvpn-client@master.service, /usr/bin/systemctl stop openvpn-client@master.service, /usr/bin/systemctl is-active openvpn-client@master.service
+# bcru ALL=(ALL) NOPASSWD: /usr/bin/systemctl start openvpn-client@master.service, /usr/bin/systemctl stop openvpn-client@master.service, /usr/bin/systemctl is-active openvpn-client@master.service
 
 import os
 import sys

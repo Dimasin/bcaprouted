@@ -1,0 +1,20 @@
+[Unit]
+Description=Backup routing to USB modem
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bcaprouted
+EnvironmentFile=/opt/bcaprouted/config.env
+ExecStart=/opt/bcaprouted/venv/bin/python -u bcaprouted.py
+User=bcru
+
+Restart=on-failure
+RestartSec=300
+RestartPreventExitStatus=10
+
+SyslogIdentifier=bcaprouted
+
+[Install]
+WantedBy=multi-user.target
