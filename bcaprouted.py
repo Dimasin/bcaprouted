@@ -34,6 +34,7 @@ ntfy_url = os.getenv("ntfy_url","")
 ntfy_lp = os.getenv("ntfy_login_pass","")
 vpn_unit = os.getenv("vpn_unit","")
 
+
 def is_valid(ip):
   """
   Валидация ip
@@ -43,9 +44,10 @@ def is_valid(ip):
   except ValueError:
     return None
 
+
 # Оставляем только те ip, что прошли проверку
 iphosts = [res for ip in ipaddrs.split(',') if (res := is_valid(ip))]
-
+  
 # Проверяем, что все необходимые переменные окружения заданы
 required = ["interface", "modemport"]
 missing = [k for k in required if not os.getenv(k)]
@@ -56,11 +58,6 @@ if (missing) or (iphosts is not None and not iphosts):
   print(f"Missing config variables: {', '.join(missing)}")
   sys.exit(EXIT_CONFIG_ERROR)
 
-pause = 60
-cycle_dead = 0
-cycle_live = 0
-msg = ''
-modem_on = False
 
 def ping(host: str):
   """
@@ -70,6 +67,7 @@ def ping(host: str):
   if(pr.returncode != 0):
     print(pr.stdout.replace('\n\n','\n')[:-1])
   return pr.returncode
+
 
 def modem_operate(op: bool):
   """
@@ -87,6 +85,7 @@ def modem_operate(op: bool):
     print(f"Modem error: {e}")
     raise
   return
+
 
 def get_signal_level():
   """
@@ -112,6 +111,7 @@ def get_signal_level():
     print(f"Modem error: {e}")
   return
 
+
 def modem_control(actions: str):
   """
   Универсальная функция управления модемом:
@@ -120,8 +120,8 @@ def modem_control(actions: str):
     "signal" -> AT+CSQ
   """
   commands = {
-    "connect": b'AT^NDISDUP=1,1,"internet"\r',
-    "disconnect": b'AT^NDISDUP=1,0,"internet"\r',
+    "connect": b'AT^NDISDUP=1,1,"internet"\r\n',
+    "disconnect": b'AT^NDISDUP=1,0,"internet"\r\n',
     "signal": b'AT+CSQ\r\n'
   }
   if actions not in commands:
@@ -153,6 +153,7 @@ def modem_control(actions: str):
     print(f"Modem error: {e}")
   return
 
+
 def vpn_operate(updown: bool):
   """
   Переподключает openvpn клиент для пользователя с root правами
@@ -170,6 +171,7 @@ def vpn_operate(updown: bool):
     os.system('/usr/sbin/openvpn --config /etc/openvpn/client/master.ovpn --daemon')
     sleep(5)
 
+
 def sendtlg(msg: str): 
   """
   Отправляет уведомление в телеграмм
@@ -181,6 +183,7 @@ def sendtlg(msg: str):
     print('Error send tlgrm message: ' + msg)
     return False
   return True
+
 
 def send_ntfy_message(message: str):
   """
@@ -206,6 +209,7 @@ def send_ntfy_message(message: str):
     print(f"Unknow alert error: {e}")
     return False
 
+
 def resend_ntfy_message(message: str):
   """
   Пытается отправить уведомление в ntfy несколько раз с паузой, если не удается, выводит ошибку
@@ -216,6 +220,7 @@ def resend_ntfy_message(message: str):
     sleep(5)
   print("Failed to send alert after multiple attempts.")
   return False
+
 
 def vpn_control(action: str):
   """
@@ -236,14 +241,14 @@ def vpn_control(action: str):
   print(f"vpn_control({action}) return {result}")
   return
 
+
 ###############################################################################################
-#Приводим модем и openvpn в состояние OFF
+#Приводим openvpn и модем в состояние OFF
 vpn_control("stop")
-try:
-  modem_control("disconnect")
-except:
-  print("Failed to initialize modem state. Exiting.")
-  sys.exit(EXIT_RUNTIME_ERROR)
+modem_control("disconnect")
+modem_on = False
+cycle_dead = 0
+cycle_live = 0
 
 while True:
   start_time = time()
@@ -281,4 +286,4 @@ while True:
 
   #пишем в консоль что произошло и пауза
   print(msg  + ' | cycle_dead = ' + str(cycle_dead) + ' | cycle_live = ' + str(cycle_live))
-  sleep(max(0, pause - (time() - start_time)))
+  sleep(max(0, 60 - (time() - start_time))) # Чтобы цикл примерно соответствовал 1 минуте
