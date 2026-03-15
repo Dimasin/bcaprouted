@@ -139,7 +139,7 @@ def modem_control(actions: str):
       if not match:
         print(f"Unexpected modem response: {response.strip()}")
         return
-      if op == "signal":
+      if actions == "signal":
       # Ищем число в строке вида "+CSQ: 18,99"
         match = re.search(r'\+CSQ:\s*(\d+),', response)
         if match:
