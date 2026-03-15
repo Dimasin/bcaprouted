@@ -1,6 +1,9 @@
 #!/usr/bin/python3 -u
-# For debug:
-# sudo chmod 666 /dev/ttyUSB2 или sudo usermod -a -G dialout $USER
+# For working with modem, user must have permissions to read/write to modem port (modemport in config.env)
+# sudo chmod 666 /dev/ttyUSB2 или sudo usermod -a -G dialout $USER после чего нужно перелогиниться в систему
+# Разрешаем сервису управлять только одним конкретным VPN-соединением
+# Выполните sudo visudo и добавьте в самый конец файла (замените myuser на ваше имя пользователя)
+# myuser ALL=(ALL) NOPASSWD: /usr/bin/systemctl start openvpn-client@master.service, /usr/bin/systemctl stop openvpn-client@master.service, /usr/bin/systemctl is-active openvpn-client@master.service
 
 import os
 import sys
@@ -25,13 +28,16 @@ ipaddrs = os.getenv("ipaddrs")
 modemport = os.getenv("modemport")
 cycles_dead = int(os.getenv("cycles_dead","5"))
 cycles_live = int(os.getenv("cycles_live","5"))
-TOKEN = os.getenv("Telegram_token","")
-chat_id = os.getenv("Telrgram_chat_id","")
+telegram_token = os.getenv("telegram_token","")
+telrgram_chat_id = os.getenv("telrgram_chat_id","")
 ntfy_url = os.getenv("ntfy_url","")
 ntfy_lp = os.getenv("ntfy_login_pass","")
+vpn_unit = os.getenv("vpn_unit","")
 
-# Валидация ip
 def is_valid(ip):
+  """
+  Валидация ip
+  """
   try:
     return str(ipaddress.ip_address(ip.strip()))
   except ValueError:
@@ -40,9 +46,12 @@ def is_valid(ip):
 # Оставляем только те ip, что прошли проверку
 iphosts = [res for ip in ipaddrs.split(',') if (res := is_valid(ip))]
 
+# Проверяем, что все необходимые переменные окружения заданы
 required = ["interface", "modemport"]
 missing = [k for k in required if not os.getenv(k)]
 
+# Если не все обязательные переменные заданы, выводим ошибку и говорим 
+# systemd больше не перезапускать сервис
 if (missing) or (iphosts is not None and not iphosts):
   print(f"Missing config variables: {', '.join(missing)}")
   sys.exit(EXIT_CONFIG_ERROR)
@@ -53,20 +62,19 @@ cycle_live = 0
 msg = ''
 modem_on = False
 
-#Делает пинг по ip адресу, при ошибке возврат отличен от нуля
-def pingip(ip):
-  response = os.system('/usr/bin/ping -n -c 1 -I ' + interface + ' ' + ip)
-  return response
-
-#Делает пинг по ip адресу, но выводит только ошибки, при ошибке возврат отличен от нуля
-def ping(host):
+def ping(host: str):
+  """
+  Делает пинг по ip адресу, но выводит только ошибки, при ошибке возврат отличен от нуля
+  """
   pr = subprocess.run(['/usr/bin/ping', host, '-c 1', '-n', '-I', interface], shell=False, stdout=subprocess.PIPE, encoding='utf-8')
   if(pr.returncode != 0):
     print(pr.stdout.replace('\n\n','\n')[:-1])
   return pr.returncode
 
-#Подключает/отключает модем
-def modem_operate(op):
+def modem_operate(op: bool):
+  """
+  Подключает/отключает модем
+  """
   sleep(5)
   try:
     with serial.Serial(modemport, 115200, timeout=5, write_timeout=5) as ser:
@@ -80,8 +88,10 @@ def modem_operate(op):
     raise
   return
 
-#Получает уровень сигнала модема
 def get_signal_level():
+  """
+  Получает уровень сигнала модема
+  """
   try:
     with serial.Serial(modemport, 115200, timeout=5, write_timeout=5) as ser:
       # Очищаем буфер перед запросом
@@ -102,8 +112,49 @@ def get_signal_level():
     print(f"Modem error: {e}")
   return
 
-#Переподключает openvpn клиент
-def vpn_operate(updown):
+def modem_control(actions: str):
+  """
+  Универсальная функция управления модемом:
+    "connect"  -> AT^NDISDUP=1,1,"internet"
+    "disconnect" -> AT^NDISDUP=1,0,"internet"
+    "signal" -> AT+CSQ
+  """
+  commands = {
+    "connect": b'AT^NDISDUP=1,1,"internet"\r',
+    "disconnect": b'AT^NDISDUP=1,0,"internet"\r',
+    "signal": b'AT+CSQ\r\n'
+  }
+  if actions not in commands:
+    raise ValueError("Unknown action. Use: connect | disconnect | signal")
+  try:
+    with serial.Serial(modemport, 115200, timeout=5, write_timeout=5) as ser:
+      # Очищаем буфер перед запросом
+      ser.reset_input_buffer()
+      # Отправляем команду
+      ser.write(commands[actions])
+      sleep(1)
+      # Читаем ответ
+      response = ser.read_all().decode('utf-8', errors='ignore')
+      match = re.search(r'OK', response)
+      if not match:
+        print(f"Unexpected modem response: {response.strip()}")
+        return
+      if op == "signal":
+      # Ищем число в строке вида "+CSQ: 18,99"
+        match = re.search(r'\+CSQ:\s*(\d+),', response)
+        if match:
+          rssi = int(match.group(1))
+          # Переводим в dBm (упрощенная формула: dBm = 2 * rssi - 113)
+          dbm = 2 * rssi - 113 if rssi != 99 else "N/A"
+          print(f"RSSI: {rssi} | Signal: {dbm} dBm")
+  except Exception as e:
+    print(f"Modem error: {e}")
+  return
+
+def vpn_operate(updown: bool):
+  """
+  Переподключает openvpn клиент для пользователя с root правами
+  """
   p = subprocess.Popen(['pgrep', '-a', 'openvpn'], stdout=subprocess.PIPE)
   out, err = p.communicate()
   for line in out.splitlines():
@@ -117,18 +168,22 @@ def vpn_operate(updown):
     os.system('/usr/sbin/openvpn --config /etc/openvpn/client/master.ovpn --daemon')
     sleep(5)
 
-#Отправляет уведомление в телеграмм
-def sendtlg(msg): 
-  tb = telebot.TeleBot(TOKEN)
+def sendtlg(msg: str): 
+  """
+  Отправляет уведомление в телеграмм
+  """
+  tb = telebot.TeleBot(telegram_token)
   try:
-    tb.send_message(chat_id, msg)
+    tb.send_message(telrgram_chat_id, msg)
   except:
     print('Error send tlgrm message: ' + msg)
     return False
   return True
 
-#Отправляет уведомление в ntfy
-def send_ntfy_message(message):
+def send_ntfy_message(message: str):
+  """
+  Отправляет уведомление в ntfy
+  """
   try:
     response = requests.post(
       ntfy_url,
@@ -149,7 +204,10 @@ def send_ntfy_message(message):
     print(f"Unknow alert error: {e}")
     return False
 
-def resend_ntfy_message(message):
+def resend_ntfy_message(message: str):
+  """
+  Пытается отправить уведомление в ntfy несколько раз с паузой, если не удается, выводит ошибку
+  """
   print(message)
   for _ in range(12):  # Пытаемся отправить сообщение 12 раз с интервалом в 5 секунд (1 минута)
     if send_ntfy_message(message):
@@ -158,14 +216,37 @@ def resend_ntfy_message(message):
   print("Failed to send alert after multiple attempts.")
   return False
 
+def vpn_control(action: str):
+  """
+  Управление VPN через systemd, если указано vpn_unit в конфиге 
+  и у пользователя есть права на управление этим юнитом
+  """
+  allowed_actions = {"start", "stop", "is-active"}
+  if action not in allowed_actions:
+    raise ValueError(f"Unsupported action: {action}")
+
+  if not vpn_unit or not vpn_unit.strip():
+    print("Service name is empty")
+    return
+
+  cmd = ["systemctl", action, vpn_unit]
+  result = subprocess.run(cmd, capture_output=True, text=True)
+
+  print(f"vpn_control({action}) return {result}")
+  return
+
 #Приводим модем и openvpn в состояние OFF
+vpn_control("start")
+vpn_control("is-active")
+vpn_control("stop")
+vpn_control("is-active")
 try:
-  modem_operate(False)
+  modem_control("signal")
+  modem_control("disconnect")
+  modem_control("connect")
 except:
   print("Failed to initialize modem state. Exiting.")
   sys.exit(EXIT_RUNTIME_ERROR)
-
-#vpn_operate(False)
 
 while True:
   start_time = time()
@@ -193,7 +274,7 @@ while True:
     if (not modem_on):     #Если модем выключен, включаем
       modem_on = True
       modem_operate(modem_on)
-      #vpn_operate(True)       #Поднимаем VPN
+      vpn_control("start")       #Поднимаем VPN
       resend_ntfy_message('Modem UP!!!')  #Шлем уведомление
 
   if (cycle_live > cycles_live):       #Если пинги есть cycles_live циклов, обнуляем счетчики
@@ -202,8 +283,8 @@ while True:
     cycle_dead = 0
     if (modem_on):           #Если модем включен, отключаем
       modem_on = False
+      vpn_control("stop")        #Отключаем VPN
       modem_operate(modem_on)
-      #vpn_operate(False)        #Отключаем VPN
       resend_ntfy_message('Modem DOWN!!!')  #Шлем уведомление
 
   #пишем в консоль что произошло и пауза
