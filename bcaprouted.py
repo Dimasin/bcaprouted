@@ -5,6 +5,7 @@
 # Выполните sudo visudo и добавьте в самый конец файла (замените myuser на ваше имя пользователя)
 # bcru ALL=(ALL) NOPASSWD: /usr/bin/systemctl start openvpn-client@master.service, /usr/bin/systemctl stop openvpn-client@master.service, /usr/bin/systemctl is-active openvpn-client@master.service
 
+import numbers
 import os
 import sys
 import serial
@@ -94,7 +95,7 @@ def modem_control(actions: str):
   commands = {
     "connect": b'AT^NDISDUP=1,1,"internet"\r\n',
     "disconnect": b'AT^NDISDUP=1,0,"internet"\r\n',
-    "signal": b'AT+CSQ\r\n'
+    "signal": b'AT^HCSQ?\r\n' #b'AT^CERSSI?\r\n'#b'AT^CSNR?\r\n'#b'AT^HCSQ?\r\n' #b'AT+CSQ\r\n'
   }
   if actions not in commands:
     raise ValueError("Unknown action. Use: connect | disconnect | signal")
@@ -112,13 +113,22 @@ def modem_control(actions: str):
         print(f"Unexpected modem response: {response.strip()}")
         return
       if actions == "signal":
-      # Ищем число в строке вида "+CSQ: 18,99"
-        match = re.search(r'\+CSQ:\s*(\d+),', response)
+        # print(f"Мodem response: {response.strip()}")
+        # Ищем число в строке вида "+CSQ: 18,99"
+        # match = re.search(r'\+CSQ:\s*(\d+),', response)
+        match = re.search(r'\^HCSQ:"LTE",(\d+),(\d+),(\d+),(\d+)', response)
         if match:
-          rssi = int(match.group(1))
+          numbers = [int(n) for n in match.groups()]
+          if (numbers and len(numbers) == 4):
+            rssi = numbers[0] - 121
+            rsrp = numbers[1] - 141
+            sinr = int(numbers[2] * 0.2) - 20
+            rsrq = int(numbers[3] * 0.5) - 20
+            print(f"Мodem response: RSSI {rssi} dBm, RSRP {rsrp} dBm, RSRQ {rsrq} dB, SINR {sinr} dB")
+          # rssi = int(match.group(1))
           # Переводим в dBm (упрощенная формула: dBm = 2 * rssi - 113)
-          dbm = 2 * rssi - 113 if rssi != 99 else "N/A"
-          print(f"Мodem response: RSSI {rssi}, Signal {dbm} dBm")
+          # dbm = 2 * rssi - 113 if rssi != 99 else "N/A"
+          # print(f"Мodem response: RSSI {rssi}, Signal {dbm} dBm")
       else:
         print(f"Мodem response: {response.strip()} wait 10s ...")
         stop_event.wait(10)  # Если переключали интернет ждем 10 сек, чтобы успело все сработать
